@@ -2,12 +2,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/jmoiron/sqlx"
@@ -20,12 +23,12 @@ const (
 )
 
 type ReservationRequest struct {
-	SeatID           string `json:"seat_id"`
-	LastClaim        string `json:"last_claim"`
-	ClaimedID        int    `json:"claimed_by_id"`
-	BookedbyID       int    `json:"booked_by_id"`
-	IsBooked         bool   `json:"is_booked"`
-	BookingConfirmID string `json:"booking_confirm_id"`
+	SeatReservationID string `json:"seat_id"`
+	//LastClaim         string `json:"last_claim"`
+	//ClaimedID         int    `json:"claimed_by_id"`
+	BookedbyID int `json:"booked_by_id"`
+	// IsBooked          bool   `json:"is_booked"`
+	// BookingConfirmID string `json:"booking_confirm_id"`
 }
 
 func consumeMessages(db *sqlx.DB) {
@@ -34,8 +37,8 @@ func consumeMessages(db *sqlx.DB) {
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
 		"bootstrap.servers":  kafkaBroker,
 		"group.id":           "reservation-consumer-group", //check
-		"auto.offset.reset":  "earliest",                   // check
-		"enable.auto.commit": "false",                      //check
+		"auto.offset.reset":  "latest",                     // check
+		"enable.auto.commit": "true",                       //check
 	})
 
 	if err != nil {
@@ -87,13 +90,50 @@ func consumeMessages(db *sqlx.DB) {
 }
 
 func saveToDatabase(db *sqlx.DB, reservation ReservationRequest) error {
-	// Insert into Postgres DB
-	_, err := db.Exec(`
-			INSERT INTO Reservation (SeatID, last_claim, ClaimedbyID, BookedbyID, Booked, Booking_confirmID)
-			VALUES ($1, $2, $3, $4, $5, $6)`,
-		reservation.SeatID, reservation.LastClaim, reservation.ClaimedID, reservation.BookedbyID, reservation.IsBooked, reservation.BookingConfirmID)
-	if err == nil {
-		log.Println("Data saved to database")
+
+	log.Println("Inside Consumer_saveToDatabase")
+	//Check if seat is booked or not
+	var isBooked bool
+
+	err := db.Get(&isBooked, "SELECT Booked from Reservation Where SeatReservationID = $1", reservation.SeatReservationID)
+	//TODO: SeatID may repeat, make it unqiue-r
+	if err != nil && err != sql.ErrNoRows {
+
+		return err
 	}
-	return err
+
+	if isBooked {
+		return fmt.Errorf("seat is booked", reservation.SeatReservationID)
+	}
+
+	// Get last claim TS for that seatID from DB
+	var lastClaimTime time.Time
+	err = db.Get(&lastClaimTime, "SELECT last_claim from Reservation Where SeatReservationID = $1 ORDER BY last_claim DESC LIMIT 1", reservation.SeatReservationID)
+	//TODO: SeatID may repeat, make it unqiue-r
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	currenttime := time.Now()
+
+	if currenttime.Sub(lastClaimTime).Minutes() < 5 {
+		return fmt.Errorf("ticket is in process of being booked")
+	}
+
+	// Insert into Postgres DB
+	_, err = db.Exec(`
+			INSERT INTO Reservation (SeatReservationID, BookedbyID, Booked, Booking_confirmID)
+			VALUES ($1, $2, $3, $4)`,
+		reservation.SeatReservationID, reservation.BookedbyID, true, generateBookingConfirmationID())
+
+	if err != nil {
+		return err
+	}
+
+	log.Println("Data saved to database")
+	return nil
+}
+
+func generateBookingConfirmationID() int {
+	rand.Seed(time.Now().UnixNano())
+	return rand.Intn(900000) + 100000 // Generates a random number between 100000 and 999999
 }

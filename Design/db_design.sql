@@ -41,7 +41,7 @@ CREATE TABLE Show (
 -- Reservation Table
 CREATE TABLE Reservation (
     ReservationID SERIAL PRIMARY KEY,
-    SeatID VARCHAR(255) REFERENCES Seat(SeatID),
+    SeatReservationID VARCHAR(255),
     last_claim TIMESTAMP,
     ClaimedbyID INTEGER REFERENCES Users(UserID),
     BookedbyID INTEGER REFERENCES Users(UserID),

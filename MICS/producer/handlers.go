@@ -13,26 +13,39 @@ const kafkaBroker = "localhost:9092"
 const kafkaTopic = "reservation_requests"
 
 // Reservation request structure, based on Reservation table DB schema
+type ReservationForm struct {
+	SeatID     string `json:"seat_id"`
+	ShowID     string `json:"show_id"`
+	BookedbyID int    `json:"booked_by_id"` //user who is trying to book
+}
+
 type ReservationRequest struct {
-	SeatID           string `json:"seat_id"`
-	LastClaim        string `json:"last_claim"`
-	ClaimedID        int    `json:"claimed_by_id"`
-	BookedbyID       int    `json:"booked_by_id"`
-	IsBooked         bool   `json:"is_booked"`
-	BookingConfirmID string `json:"booking_confirm_id"`
+	SeatReservationID string `json:"seat_id"`
+	//LastClaim         string `json:"last_claim"`
+	//ClaimedID         int    `json:"claimed_by_id"`
+	BookedbyID int `json:"booked_by_id"`
+	// IsBooked          bool   `json:"is_booked"`
+	// BookingConfirmID string `json:"booking_confirm_id"`
 }
 
 func (app *Config) HandleReservation(w http.ResponseWriter, r *http.Request) {
 	log.Println("DEBUG: Inside Producer_HandleReservation ")
 
-	var reservation ReservationRequest
+	var reservationform ReservationForm
 
 	//Read the request payload
-	err := json.NewDecoder(r.Body).Decode(&reservation)
+	err := json.NewDecoder(r.Body).Decode(&reservationform)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse reservation request: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Failed to parse reservation form: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	//Create the Reservation Request
+	var reservation ReservationRequest
+
+	// Create the Seatreservation ID
+	reservation.SeatReservationID = "SH_" + reservationform.ShowID + "_ST_" + reservationform.SeatID //logic can be made more complex
+	reservation.BookedbyID = reservationform.BookedbyID
 
 	//reservation variable now has the json
 

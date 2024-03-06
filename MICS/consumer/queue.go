@@ -93,44 +93,63 @@ func saveToDatabase(db *sqlx.DB, reservation ReservationRequest) error {
 
 	log.Println("Inside Consumer_saveToDatabase")
 	//Check if seat is booked or not
-	var isBooked bool
+	var isBooked sql.NullBool
 
-	err := db.Get(&isBooked, "SELECT Booked from Reservation Where SeatReservationID = $1", reservation.SeatReservationID)
-	//TODO: SeatID may repeat, make it unqiue-r
+	err := db.Get(&isBooked, "SELECT Booked FROM Reservation WHERE SeatReservationID = $1", reservation.SeatReservationID)
+
 	if err != nil && err != sql.ErrNoRows {
-
-		return err
+		return fmt.Errorf("error querying Booked status: %v", err)
 	}
 
-	if isBooked {
-		return fmt.Errorf("seat is booked", reservation.SeatReservationID)
+	if isBooked.Valid && isBooked.Bool {
+		return fmt.Errorf("seat %v is booked", reservation.SeatReservationID)
 	}
 
-	// Get last claim TS for that seatID from DB
-	var lastClaimTime time.Time
-	err = db.Get(&lastClaimTime, "SELECT last_claim from Reservation Where SeatReservationID = $1 ORDER BY last_claim DESC LIMIT 1", reservation.SeatReservationID)
-	//TODO: SeatID may repeat, make it unqiue-r
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
-	currenttime := time.Now()
-
-	if currenttime.Sub(lastClaimTime).Minutes() < 5 {
-		return fmt.Errorf("ticket is in process of being booked")
-	}
-
-	// Insert into Postgres DB
-	_, err = db.Exec(`
-			INSERT INTO Reservation (SeatReservationID, BookedbyID, Booked, Booking_confirmID)
-			VALUES ($1, $2, $3, $4)`,
-		reservation.SeatReservationID, reservation.BookedbyID, true, generateBookingConfirmationID())
-
+	//Check is claimedbyID is same as bookedbyID
+	var ClaimedbyID int
+	query := "SELECT ClaimedbyID FROM Reservation WHERE SeatReservationID = $1"
+	err = db.QueryRow(query, reservation.SeatReservationID).Scan(&ClaimedbyID)
 	if err != nil {
-		return err
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("no rows found for SeatReservationID: %s", reservation.SeatReservationID)
+		} else {
+			return fmt.Errorf("error querying ClaimedbyID: %v", err)
+		}
 	}
 
-	log.Println("Data saved to database")
-	return nil
+	fmt.Printf("ClaimedID: %d", ClaimedbyID)
+	fmt.Printf("BookedbyID: %d", reservation.BookedbyID)
+
+	if ClaimedbyID == reservation.BookedbyID {
+		// Insert into Postgres DB
+		_, err = db.Exec(`
+		UPDATE Reservation 
+		SET BookedbyID = $1, Booked = true, Booking_confirmID = $2
+		WHERE SeatReservationID = $3`,
+			reservation.BookedbyID, generateBookingConfirmationID(), reservation.SeatReservationID)
+
+		if err != nil {
+			return fmt.Errorf("error saving booking to DB")
+		}
+
+		log.Println("Data saved to database")
+		return nil
+	} else {
+		// Get last claim TS for that seatID from DB
+		var lastClaimTime time.Time
+		err = db.Get(&lastClaimTime, "SELECT last_claim from Reservation Where SeatReservationID = $1 ORDER BY last_claim DESC LIMIT 1", reservation.SeatReservationID)
+		//TODO: SeatID may repeat, make it unqiue-r
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("error querying lastclaim: %v", err)
+		}
+		currenttime := time.Now()
+
+		if currenttime.Sub(lastClaimTime).Minutes() < 1 {
+			return fmt.Errorf("ticket is claimed before 1mins by some other user")
+		} else {
+			return fmt.Errorf("booking can be done again by other user from claim part")
+		}
+	}
 }
 
 func generateBookingConfirmationID() int {

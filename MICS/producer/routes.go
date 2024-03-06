@@ -28,5 +28,7 @@ func (app *Config) routes() http.Handler {
 	//Add route at root level
 	mux.Post("/reserve", app.HandleReservation)
 
+	mux.Post("/claimSeat", app.HandleSeatClaim)
+
 	return mux
 }

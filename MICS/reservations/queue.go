@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 )
@@ -72,8 +72,7 @@ func consumeMessages(db *sqlx.DB) {
 					log.Printf("Error decoding JSON: %v", err)
 					continue
 				}
-				// Future : Check if ticket is booked or not
-
+				//Check if ticket was booked or not is already done at the producer end
 				//Save the data to Postgres
 				err = saveToDatabase(db, reservation)
 
@@ -102,7 +101,7 @@ func saveToDatabase(db *sqlx.DB, reservation ReservationRequest) error {
 	}
 
 	if isBooked.Valid && isBooked.Bool {
-		return fmt.Errorf("seat %v is booked", reservation.SeatReservationID)
+		return fmt.Errorf("seat %v is already booked", reservation.SeatReservationID)
 	}
 
 	//Check is claimedbyID is same as bookedbyID

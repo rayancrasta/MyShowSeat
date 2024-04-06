@@ -39,7 +39,7 @@ type ClaimSeatForm struct {
 	BookedbyID int    `json:"booked_by_id"` //user who is claiming
 }
 
-func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
+func (app *Config) oldHandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	log.Println("DEBUG: Inside Producer_HandleSeatClaim ")
 
 	var claimseatform ClaimSeatForm
@@ -75,16 +75,18 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 
+	//Initially claim doesnt exsist
 	claimexsists := false
 
 	if err != sql.ErrNoRows {
+		// if rows exsist , claim exsists
 		claimexsists = true
 	}
 
 	log.Printf("Status: %s", status)
 
 	if status == "Booked" {
-		http.Error(w, fmt.Sprintf("Seat %v for Show %v is Booked", claimseatform.SeatID, claimseatform.ShowID), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Seat %v for Show %v is already Booked", claimseatform.SeatID, claimseatform.ShowID), http.StatusBadRequest)
 		return
 	} else if status == "Claimed" {
 		http.Error(w, fmt.Sprintf("Seat %v for Show %v is Claimed by Other User", claimseatform.SeatID, claimseatform.ShowID), http.StatusBadRequest)
@@ -119,17 +121,38 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 		return
 
 	}
-
 }
 
 func ConnecttoDB() (db *sqlx.DB) {
-	//Check if seat is booked or claimed
+
 	db, err := sqlx.Open("postgres", pgConnectionString)
 	if err != nil {
 		log.Fatalf("Error connecting to postgresSQL: %v", err)
 	}
 
 	return db
+}
+
+func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
+	log.Println("DEBUG: Inside Producer_HandleSeatClaim ")
+
+	var claimseatform ClaimSeatForm
+
+	//Read the request payload
+	err := json.NewDecoder(r.Body).Decode(&claimseatform)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to parse reservation form: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	//Send the request to the producer function
+	err = produceClaimMessage(claimseatform)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to send reservation request to Kafka: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (app *Config) HandleReservation(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +177,7 @@ func (app *Config) HandleReservation(w http.ResponseWriter, r *http.Request) {
 	//reservation variable now has the json
 
 	//Send the request to the producer function
-	err = produceMessage(reservation)
+	err = produceReservationMessage(reservation)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to send reservation request to Kafka: %v", err), http.StatusInternalServerError)
 		return
@@ -163,7 +186,7 @@ func (app *Config) HandleReservation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func produceMessage(reservation ReservationRequest) error {
+func produceReservationMessage(reservation ReservationRequest) error {
 	log.Println("DEBUG: Inside Producer_produceMessage ")
 	producer, err := kafka.NewProducer(&kafka.ConfigMap{
 		"bootstrap.servers": kafkaBroker})
@@ -182,8 +205,49 @@ func produceMessage(reservation ReservationRequest) error {
 		return err
 	}
 
-	topic := kafkaTopic // Create a variable to store the topic name
+	topic := "reservation_requests" // Create a variable to store the topic name
 
+	// Send the message to the queue
+	err = producer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: kafka.PartitionAny},
+		Value: message,
+	}, nil)
+
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	// Wait for any outstanding messages to be delivered
+	producer.Flush(3 * 1000) // 15-second timeout, adjust as needed
+
+	return nil
+}
+
+func produceClaimMessage(claim ClaimSeatForm) error {
+	log.Println("DEBUG: Inside Producer_produceMessage ")
+	producer, err := kafka.NewProducer(&kafka.ConfigMap{
+		"bootstrap.servers": kafkaBroker})
+
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	defer producer.Close()
+
+	//Make it byte
+	message, err := json.Marshal(claim)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	topic := "claim_requests" // Create a variable to store the topic name
+
+	// Send the message to the queue
 	err = producer.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic:     &topic,

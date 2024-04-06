@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,13 +8,14 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq" // Import PostgreSQL driver
 )
 
 type ClaimSeatForm struct {
-	SeatID     string `json:"seat_id"`
-	ShowID     string `json:"show_id"`
-	BookedbyID int    `json:"booked_by_id"` //user who is claiming
+	SeatIDs    []string `json:"seat_ids"`
+	ShowID     string   `json:"show_id"`
+	BookedbyID int      `json:"booked_by_id"` //user who is claiming
 }
 
 func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +39,8 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Success: Seat %v for Show %v is claimed for user %v", claimseatform.SeatID, claimseatform.ShowID, claimseatform.BookedbyID)
-	return
+	fmt.Fprintf(w, "Success: Seatsfor Show %v is claimed for user %v", claimseatform.ShowID, claimseatform.BookedbyID)
+
 }
 
 func ConnecttoDB() (db *sqlx.DB) {
@@ -57,62 +57,97 @@ func saveClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
 
 	log.Println("Inside ClaimSeat_saveClaim")
 
-	//Check if seat is booked or claimed
-	seatReservationID := "SH_" + claimseatform.ShowID + "_ST_" + claimseatform.SeatID
+	// Create an array of seatReservationIDs
+	seatReservationIDs := make([]string, len(claimseatform.SeatIDs))
+	for i, seatID := range claimseatform.SeatIDs {
+		seatReservationIDs[i] = "SH_" + claimseatform.ShowID + "_ST_" + seatID
+	}
 
 	query := `
-		SELECT 
-			CASE 
-				WHEN Booked = TRUE THEN 'Booked'
-				WHEN last_claim IS NOT NULL AND last_claim >= NOW() - INTERVAL '1 minute' THEN 'Claimed'
-				ELSE 'NotBooked'
-			END AS status
-		FROM Reservation
-		WHERE SeatReservationID = $1;`
+    SELECT 
+        CASE 
+            WHEN EXISTS (
+                SELECT 1
+                FROM Reservation
+                WHERE SeatReservationID = ANY($1) AND Booked = TRUE 
+            ) THEN 'Booked'
+            WHEN EXISTS (
+                SELECT 1
+                FROM Reservation
+                WHERE SeatReservationID = ANY($1) AND last_claim >= NOW() - INTERVAL '1 minute'
+            ) THEN 'Claimed'
+            ELSE 'Available'
+        END AS status;`
 
 	var status string
 
-	err := db.QueryRow(query, seatReservationID).Scan(&status)
-	log.Printf("Status: %s", status)
-
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("error querying Booked status: %v", err)
+	err := db.QueryRow(query, pq.Array(seatReservationIDs)).Scan(&status)
+	if err != nil {
+		return fmt.Errorf("error querying seat availability: %v", err)
 	}
 
-	//Initially claim doesnt exsist
-	claimexsists := false
-
-	if err != sql.ErrNoRows {
-		// if rows exsist , claim exsists
-		claimexsists = true
-	}
+	log.Printf("Seat availability status: %s", status)
 
 	if status == "Booked" {
-		return fmt.Errorf("seat %v for Show %v is already Booked", claimseatform.SeatID, claimseatform.ShowID)
+		return fmt.Errorf("the seats for Show %v is not available, already booked", claimseatform.ShowID)
 	} else if status == "Claimed" {
-		return fmt.Errorf("seat %v for Show %v is Claimed by Other User", claimseatform.SeatID, claimseatform.ShowID)
+		return fmt.Errorf("seat %v for Show %v is Claimed by Other User", claimseatform.SeatIDs, claimseatform.ShowID)
 	} else {
-
 		//Seat can be claimed
+		//Dont insert just, update
 		currenttime := time.Now()
 
-		if claimexsists {
-			_, err = db.Exec(`
-				UPDATE Reservation 
-				SET ClaimedbyID = $1, last_claim = $2 
-				WHERE SeatReservationID = $3`,
+		// Begin a transaction
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %v", err)
+		}
+		defer tx.Rollback() // Rollback the transaction if it hasn't been committed
+
+		// Loop through each seatReservationID
+		for _, seatReservationID := range seatReservationIDs {
+			_, err = tx.Exec(`
+					UPDATE Reservation 
+					SET ClaimedbyID = $1, last_claim = $2 
+					WHERE SeatReservationID = $3`,
 				claimseatform.BookedbyID, currenttime, seatReservationID)
-		} else {
-			_, err = db.Exec(`
-			INSERT INTO Reservation (SeatReservationID, ClaimedbyID, last_claim)
-			VALUES ($1, $2, $3)`,
-				seatReservationID, claimseatform.BookedbyID, currenttime)
+
+			if err != nil {
+				// Rollback the transaction and return error
+				tx.Rollback()
+				return fmt.Errorf("update claim query failed for SeatReservationID: %s - %v", seatReservationID, err)
+			}
 		}
 
-		if err != nil {
-			return fmt.Errorf("Update/Insert claim query failed")
+		// Commit the transaction if all updates are successful
+		if err := tx.Commit(); err != nil {
+			// Rollback the transaction if commit fails
+			tx.Rollback()
+			return fmt.Errorf("failed to commit transaction: %v", err)
 		}
-		log.Println("Claim saved to database")
+
+		log.Println("Claims saved to database")
+
+		//Rollback if seat reservation failed for any
 	}
+
+	// if claimexsists {
+	// 	_, err = db.Exec(`
+	// 		UPDATE Reservation
+	// 		SET ClaimedbyID = $1, last_claim = $2
+	// 		WHERE SeatReservationID = $3`,
+	// 		claimseatform.BookedbyID, currenttime, seatReservationID)
+	// } else {
+	// 	_, err = db.Exec(`
+	// 	INSERT INTO Reservation (SeatReservationID, ClaimedbyID, last_claim)
+	// 	VALUES ($1, $2, $3)`,
+	// 		seatReservationID, claimseatform.BookedbyID, currenttime)
+	// }
+
+	// if err != nil {
+	// 	return fmt.Errorf("Update/Insert claim query failed")
+	// }
+	// log.Println("Claim saved to database")
+
 	return nil
 }

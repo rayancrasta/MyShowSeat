@@ -31,8 +31,16 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := ConnecttoDB()
+	//Validation to check if show and seat match
+	err = checkClaim(db, claimseatform)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Claim Check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	//Send the request to the producer function
 	err = saveClaim(db, claimseatform)
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to claim the seat in DB: %v", err), http.StatusInternalServerError)
 		return
@@ -51,6 +59,37 @@ func ConnecttoDB() (db *sqlx.DB) {
 	}
 
 	return db
+}
+
+func checkClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
+
+	// Check if seats exist
+	for _, seatID := range claimseatform.SeatIDs {
+		var exists bool
+		err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM Seat WHERE SeatID = $1)`, seatID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("SeatExists Error: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("seat %s does not exist", seatID)
+		}
+		// log.Printf("DEBUG: Seatcheck done for seat: %v", seatID)
+	}
+
+	// Check if show exists
+	var showExists bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM show WHERE showid = $1)`, claimseatform.ShowID).Scan(&showExists)
+	if err != nil {
+		return fmt.Errorf("ShowExists Error: %v", err)
+	}
+	if !showExists {
+		return fmt.Errorf("show with ID %s does not exist", claimseatform.ShowID)
+	}
+
+	// log.Printf("DEBUG: showcheck done for show: %v", claimseatform.ShowID)
+
+	return nil
+
 }
 
 func saveClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {

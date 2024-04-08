@@ -21,7 +21,7 @@ type ReservationRequest struct {
 
 // Reservation request structure, based on Reservation table DB schema
 type ReservationForm struct {
-	SeatID     []string `json:"seat_ids"`
+	SeatIDs    []string `json:"seat_ids"`
 	ShowID     string   `json:"show_id"`
 	BookedbyID int      `json:"booked_by_id"` //user who is trying to book
 }
@@ -38,17 +38,25 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//reservation variable now has the json
+	db := ConnecttoDB()
+
+	//Check if seatID and showID exsists
+	err = checkBooking(db, reservationform)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Booking Check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	//Create the Reservation Request
 	var reservation ReservationRequest
 
 	// Create the Seatreservation ID
-	for _, seatID := range reservationform.SeatID {
+	for _, seatID := range reservationform.SeatIDs {
 		reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+reservationform.ShowID+"_ST_"+seatID)
 	}
 	reservation.BookedbyID = reservationform.BookedbyID
 
-	//reservation variable now has the json
-	db := ConnecttoDB()
 	//Send the request to the producer function
 	err = saveBooking(db, reservation)
 	if err != nil {
@@ -57,7 +65,7 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Success: Seat %v for Show %v is booked for user %v", reservationform.SeatID, reservationform.ShowID, reservationform.BookedbyID)
+	fmt.Fprintf(w, "Success: Seat %v for Show %v is booked for user %v", reservationform.SeatIDs, reservationform.ShowID, reservationform.BookedbyID)
 }
 
 func ConnecttoDB() (db *sqlx.DB) {
@@ -68,6 +76,37 @@ func ConnecttoDB() (db *sqlx.DB) {
 	}
 
 	return db
+}
+
+func checkBooking(db *sqlx.DB, reservationform ReservationForm) error {
+
+	// Check if seats exist
+	for _, seatID := range reservationform.SeatIDs {
+		var exists bool
+		err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM Seat WHERE SeatID = $1)`, seatID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("SeatExists Error: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("seat %s does not exist", seatID)
+		}
+		// log.Printf("DEBUG: Seatcheck done for seat: %v", seatID)
+	}
+
+	// Check if show exists
+	var showExists bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM show WHERE showid = $1)`, reservationform.ShowID).Scan(&showExists)
+	if err != nil {
+		return fmt.Errorf("ShowExists Error: %v", err)
+	}
+	if !showExists {
+		return fmt.Errorf("show with ID %s does not exist", reservationform.ShowID)
+	}
+
+	// log.Printf("DEBUG: showcheck done for show: %v", claimseatform.ShowID)
+
+	return nil
+
 }
 
 func saveBooking(db *sqlx.DB, reservation ReservationRequest) error {

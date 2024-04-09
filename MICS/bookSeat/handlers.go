@@ -147,15 +147,22 @@ func saveBooking(db *sqlx.DB, reservation ReservationRequest) error {
 			return fmt.Errorf("error querying ClaimedbyIDs: %v", err)
 		}
 	}
+
 	defer rows.Close()
 
 	// Check if all claimedbyIDs are the same as bookedByID
 	for rows.Next() {
-		var claimedByID int
+		var claimedByID sql.NullInt64
 		if err := rows.Scan(&claimedByID); err != nil {
 			return fmt.Errorf("error scanning claimedByID: %v", err)
 		}
-		if claimedByID != reservation.BookedbyID {
+
+		// Check if claimedByID is NULL; By default its Null
+		if !claimedByID.Valid {
+			return fmt.Errorf("seats need to be claimed first")
+		}
+
+		if int(claimedByID.Int64) != reservation.BookedbyID {
 			// If any claimedbyID is different from bookedByID, return false
 			return fmt.Errorf("Some/Many seats are claimed by different user than one boooking it")
 		}

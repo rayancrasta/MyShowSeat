@@ -79,16 +79,28 @@ func (app *Config) createShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Slice to store seatIDs
+	var seatIDs []string
+
+	seatIDs, err = getSeatIDs(db, show.VenueID, show.HallID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("GetSeatIDs failed : %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create entries in reservation table
+	// Columns that will be created : showid, seatreservationid
+	err = insertReservations(db, showid, seatIDs)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Reservation table entry failed : %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	// Set the Content-Type header to indicate JSON response
 	w.Header().Set("Content-Type", "application/json")
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(jsonResponse)
-
-	// //Create entries in reservation table
-	// //
-	// //Check if seat is booked or claimed
-	// seatReservationID := "SH_" + claishowmseatform.ShowID + "_ST_" + claimseatform.SeatID
 
 }
 
@@ -100,6 +112,31 @@ func ConnecttoDB() (db *sqlx.DB) {
 	}
 
 	return db
+}
+
+func getSeatIDs(db *sqlx.DB, venueID int, hallID int) ([]string, error) {
+
+	var seatIDs []string
+
+	query := `SELECT seatid FROM seat WHERE venueid = $1 AND hallid = $2`
+	rows, err := db.Query(query, venueID, hallID)
+	if err != nil {
+		return seatIDs, err
+	}
+	defer rows.Close()
+
+	// Iterate through the rows and append seatIDs to the slice
+	for rows.Next() {
+		var seatID string
+		if err := rows.Scan(&seatID); err != nil {
+			return seatIDs, err
+		}
+		seatIDs = append(seatIDs, seatID)
+	}
+	if err := rows.Err(); err != nil {
+		return seatIDs, err
+	}
+	return seatIDs, nil
 }
 
 func checkValidValues(db *sqlx.DB, show Show) error {
@@ -135,4 +172,28 @@ func getHallCapacity(db *sqlx.DB, VenueID int, HallID int) (string, error) {
 	}
 
 	return strconv.Itoa(hallCapacity), nil
+}
+
+func insertReservations(db *sqlx.DB, showID int, seatIDs []string) error {
+	// Begin a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // Rollback transaction if not committed
+
+	for _, seatID := range seatIDs {
+		seatReservationID := "SH_" + strconv.Itoa(showID) + "_ST_" + seatID
+		_, err := tx.Exec("INSERT INTO reservation (seatreservationid, showid) VALUES ($1, $2)", seatReservationID, showID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Commit the transaction if all inserts were successful
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
 }

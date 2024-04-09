@@ -1,17 +1,20 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	_ "github.com/lib/pq" // Import PostgreSQL driver
+	"github.com/redis/go-redis/v9"
 )
 
 type ReservationRequest struct {
@@ -22,7 +25,7 @@ type ReservationRequest struct {
 // Reservation request structure, based on Reservation table DB schema
 type ReservationForm struct {
 	SeatIDs    []string `json:"seat_ids"`
-	ShowID     string   `json:"show_id"`
+	ShowID     int      `json:"show_id"`
 	BookedbyID int      `json:"booked_by_id"` //user who is trying to book
 }
 
@@ -53,12 +56,12 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 
 	// Create the Seatreservation ID
 	for _, seatID := range reservationform.SeatIDs {
-		reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+reservationform.ShowID+"_ST_"+seatID)
+		reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+strconv.Itoa(reservationform.ShowID)+"_ST_"+seatID)
 	}
 	reservation.BookedbyID = reservationform.BookedbyID
 
 	//Send the request to the producer function
-	err = saveBooking(db, reservation)
+	err = saveBooking(db, reservation, reservationform.ShowID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
 		return
@@ -109,7 +112,7 @@ func checkBooking(db *sqlx.DB, reservationform ReservationForm) error {
 
 }
 
-func saveBooking(db *sqlx.DB, reservation ReservationRequest) error {
+func saveBooking(db *sqlx.DB, reservation ReservationRequest, showid int) error {
 
 	log.Println("Inside Consumer_saveToDatabase")
 	//Check if seat is booked or not
@@ -171,39 +174,81 @@ func saveBooking(db *sqlx.DB, reservation ReservationRequest) error {
 	// Above check is true
 	// Insert into Postgres DB
 	// Loop through each SeatReservationID and update the reservation
-	for _, seatReservationID := range reservation.SeatReservationIDs {
-		_, err = db.Exec(`
-        UPDATE Reservation 
-        SET BookedbyID = $1, Booked = true, Booking_confirmID = $2
-        WHERE SeatReservationID = $3`,
-			reservation.BookedbyID, generateBookingConfirmationID(), seatReservationID)
-
-		if err != nil {
-			return fmt.Errorf("error saving booking to DB for SeatReservationID: %s", seatReservationID)
-		}
+	err = updateReservationDB(db, reservation.SeatReservationIDs, reservation.BookedbyID)
+	if err != nil {
+		return fmt.Errorf("Update Reservation error: %v", err)
 	}
 
 	log.Println("Data saved to database")
-	return nil
-	// } else {
-	// 	// Get last claim TS for that seatID from DB
-	// 	var lastClaimTime time.Time
-	// 	err = db.Get(&lastClaimTime, "SELECT last_claim from Reservation Where SeatReservationID = $1 ORDER BY last_claim DESC LIMIT 1", reservation.SeatReservationID)
-	// 	//TODO: SeatID may repeat, make it unqiue-r
-	// 	if err != nil && err != sql.ErrNoRows {
-	// 		return fmt.Errorf("error querying lastclaim: %v", err)
-	// 	}
-	// 	currenttime := time.Now()
 
-	// 	if currenttime.Sub(lastClaimTime).Minutes() < 1 {
-	// 		return fmt.Errorf("ticket is claimed before 1mins by some other user")
-	// 	} else {
-	// 		return fmt.Errorf("booking can be done again by other user from claim part")
-	// 	}
-	// }
+	//Update Redis Cache with decremented capacity
+	err = updateSeatLeftRedis(showid, len(reservation.SeatReservationIDs))
+	if err != nil {
+		return fmt.Errorf("Redis updated error: %v", err)
+	}
+
+	return nil
+
 }
 
 func generateBookingConfirmationID() int {
 	rand.Seed(time.Now().UnixNano())
 	return rand.Intn(900000) + 100000 // Generates a random number between 100000 and 999999
+}
+
+func updateReservationDB(db *sqlx.DB, SeatReservationIDs []string, BookedbyID int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("Error starting transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	for _, seatReservationID := range SeatReservationIDs {
+		_, err = tx.Exec(`
+            UPDATE Reservation 
+            SET BookedbyID = $1, Booked = true, Booking_confirmID = $2
+            WHERE SeatReservationID = $3`,
+			BookedbyID, generateBookingConfirmationID(), seatReservationID)
+
+		if err != nil {
+			// Rollback the transaction if any update fails.
+			return fmt.Errorf("Error updating database: %v", err)
+		}
+	}
+
+	// Commit the transaction if all updates are successful.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("Error committing transaction: %v", err)
+	}
+	return nil
+}
+
+func updateSeatLeftRedis(showID int, seatsbooked int) error {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+
+	defer rdb.Close()
+
+	// Context for the Redis operations.
+	ctx := context.Background()
+
+	//Get current seatleft value from Redis
+	seatsLeftCmd := rdb.Get(ctx, strconv.Itoa(showID))
+	seatsLeft, err := seatsLeftCmd.Int()
+	if err != nil {
+		return fmt.Errorf("Error getting seatsLeft from Redis: %v", err)
+	}
+
+	new_seatsLeft := seatsLeft - seatsbooked
+
+	// Update the value in Redis.
+	err = rdb.Set(ctx, strconv.Itoa(showID), new_seatsLeft, 0).Err()
+	if err != nil {
+		return fmt.Errorf("Error setting value in Redis: %v", err)
+	}
+
+	return nil
 }

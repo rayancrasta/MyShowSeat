@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -14,7 +15,7 @@ import (
 
 type ClaimSeatForm struct {
 	SeatIDs    []string `json:"seat_ids"`
-	ShowID     string   `json:"show_id"`
+	ShowID     int      `json:"show_id"`
 	BookedbyID int      `json:"booked_by_id"` //user who is claiming
 }
 
@@ -99,7 +100,7 @@ func saveClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
 	// Create an array of seatReservationIDs
 	seatReservationIDs := make([]string, len(claimseatform.SeatIDs))
 	for i, seatID := range claimseatform.SeatIDs {
-		seatReservationIDs[i] = "SH_" + claimseatform.ShowID + "_ST_" + seatID
+		seatReservationIDs[i] = "SH_" + strconv.Itoa(claimseatform.ShowID) + "_ST_" + seatID
 	}
 
 	query := `

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // Import PostgreSQL driver
+	"github.com/redis/go-redis/v9"
 )
 
 type Show struct {
@@ -41,20 +43,25 @@ func (app *Config) createShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	//Get capactiy of the hall, using hallID and venueID
-	hallCapacity, err := getHallCapacity(db, show.VenueID, show.HallID)
-	log.Printf("HallCapacity: %s", hallCapacity)
+	hallCapacityStr, err := getHallCapacity(db, show.VenueID, show.HallID)
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("HallCapacity failed : %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Create show in show table
+	hallCapacity, err := strconv.Atoi(hallCapacityStr)
+	if err != nil {
+		log.Println("Cant convert hallCapacity to integer")
+	}
+
+	// Create show in show table, with capacity=hallcapacity, usage=0
 	var showid int
-	err = db.QueryRow(`INSERT INTO Show (ShowName, VenueID, HallID, Time_start, Time_end)
-						VALUES ($1, $2, $3, $4, $5)
+	err = db.QueryRow(`INSERT INTO Show (ShowName, VenueID, HallID, Time_start, Time_end,totalcapacity,currentusage)
+						VALUES ($1, $2, $3, $4, $5,$6,$7)
 						ON CONFLICT (ShowName, VenueID, HallID, Time_start) DO NOTHING
 						RETURNING showid`,
-		show.ShowName, show.VenueID, show.HallID, show.Starttime, show.Endtime).Scan(&showid)
+		show.ShowName, show.VenueID, show.HallID, show.Starttime, show.Endtime, hallCapacity, 0).Scan(&showid)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -67,15 +74,10 @@ func (app *Config) createShow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Construct a JSON object
-	response := map[string]int{
-		"showid": showid,
-	}
-
-	// Convert the JSON object to a JSON string
-	jsonResponse, err := json.Marshal(response)
+	//Create entry in redis
+	err = createRedisEntry(showid, hallCapacity)
 	if err != nil {
-		http.Error(w, "Failed to convert showID to json", http.StatusInternalServerError)
+		http.Error(w, "Failed to updated Redis", http.StatusInternalServerError)
 		return
 	}
 
@@ -96,6 +98,17 @@ func (app *Config) createShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Construct a JSON object
+	response := map[string]int{
+		"showid": showid,
+	}
+
+	// Convert the JSON object to a JSON string
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "Failed to convert showID to json", http.StatusInternalServerError)
+		return
+	}
 	// Set the Content-Type header to indicate JSON response
 	w.Header().Set("Content-Type", "application/json")
 
@@ -193,6 +206,27 @@ func insertReservations(db *sqlx.DB, showID int, seatIDs []string) error {
 	// Commit the transaction if all inserts were successful
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func createRedisEntry(showID int, totalCapacity int) error {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+
+	defer rdb.Close()
+
+	// Context for the Redis operations.
+	ctx := context.Background()
+
+	// Update the value in Redis.
+	err := rdb.Set(ctx, strconv.Itoa(showID), totalCapacity, 0).Err()
+	if err != nil {
+		return fmt.Errorf("error setting value in Redis: %v", err)
 	}
 
 	return nil

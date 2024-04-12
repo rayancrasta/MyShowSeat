@@ -6,10 +6,8 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/lib/pq"
 	_ "github.com/lib/pq" // Import PostgreSQL driver
 )
 
@@ -48,7 +46,7 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Success: Seatsfor Show %v is claimed for user %v", claimseatform.ShowID, claimseatform.BookedbyID)
+	fmt.Fprintf(w, "Success: Seats %v for Show %v is claimed for user %v", claimseatform.SeatIDs, claimseatform.ShowID, claimseatform.BookedbyID)
 
 }
 
@@ -94,7 +92,6 @@ func checkClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
 }
 
 func saveClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
-
 	log.Println("Inside ClaimSeat_saveClaim")
 
 	// Create an array of seatReservationIDs
@@ -103,91 +100,65 @@ func saveClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
 		seatReservationIDs[i] = "SH_" + strconv.Itoa(claimseatform.ShowID) + "_ST_" + seatID
 	}
 
-	query := `
-    SELECT 
-        CASE 
-            WHEN EXISTS (
-                SELECT 1
-                FROM Reservation
-                WHERE SeatReservationID = ANY($1) AND Booked = TRUE 
-            ) THEN 'Booked'
-            WHEN EXISTS (
-                SELECT 1
-                FROM Reservation
-                WHERE SeatReservationID = ANY($1) AND last_claim >= NOW() - INTERVAL '1 minute'
-            ) THEN 'Claimed'
-            ELSE 'Available'
-        END AS status;`
-
-	var status string
-
-	err := db.QueryRow(query, pq.Array(seatReservationIDs)).Scan(&status)
+	// Begin a transaction
+	tx, err := db.Beginx()
 	if err != nil {
-		return fmt.Errorf("error querying seat availability: %v", err)
+		return fmt.Errorf("failed to begin transaction: %v", err)
 	}
+	defer tx.Rollback() // Rollback the transaction if it hasn't been committed
 
-	log.Printf("Seat availability status: %s", status)
+	// Loop through each seatReservationID
+	for _, seatReservationID := range seatReservationIDs {
+		// Execute a SELECT statement with FOR UPDATE to lock the row
+		var status string
+		err = tx.QueryRowx(`
+            SELECT 
+                CASE 
+                    WHEN Booked THEN 'Booked'
+                    WHEN last_claim >= NOW() - INTERVAL '1 minute' THEN 'Claimed'
+                    ELSE 'Available'
+                END AS status
+            FROM Reservation
+            WHERE SeatReservationID = $1
+            FOR UPDATE`, seatReservationID).Scan(&status)
 
-	if status == "Booked" {
-		return fmt.Errorf("the seats for Show %v is not available, already booked", claimseatform.ShowID)
-	} else if status == "Claimed" {
-		return fmt.Errorf("seat %v for Show %v is Claimed by Other User", claimseatform.SeatIDs, claimseatform.ShowID)
-	} else {
-		//Seat can be claimed
-		//Dont insert just, update
-		currenttime := time.Now()
-
-		// Begin a transaction
-		tx, err := db.Begin()
 		if err != nil {
-			return fmt.Errorf("failed to begin transaction: %v", err)
-		}
-		defer tx.Rollback() // Rollback the transaction if it hasn't been committed
-
-		// Loop through each seatReservationID
-		for _, seatReservationID := range seatReservationIDs {
-			_, err = tx.Exec(`
-					UPDATE Reservation 
-					SET ClaimedbyID = $1, last_claim = $2 
-					WHERE SeatReservationID = $3`,
-				claimseatform.BookedbyID, currenttime, seatReservationID)
-
-			if err != nil {
-				// Rollback the transaction and return error
-				tx.Rollback()
-				return fmt.Errorf("update claim query failed for SeatReservationID: %s - %v", seatReservationID, err)
-			}
-		}
-
-		// Commit the transaction if all updates are successful
-		if err := tx.Commit(); err != nil {
-			// Rollback the transaction if commit fails
+			// Rollback the transaction and return error
 			tx.Rollback()
-			return fmt.Errorf("failed to commit transaction: %v", err)
+			return fmt.Errorf("error querying seat availability: %v", err)
 		}
 
-		log.Println("Claims saved to database")
+		log.Printf("Seat %s availability status: %s", seatReservationID, status)
 
-		//Rollback if seat reservation failed for any
+		if status == "Booked" {
+			return fmt.Errorf("the seats for Show %v are not available, already booked", claimseatform.ShowID)
+		} else if status == "Claimed" {
+			return fmt.Errorf("seats %v for Show %v are claimed by another user", claimseatform.SeatIDs, claimseatform.ShowID)
+		}
+
+		// Update the reservation row
+		_, err = tx.Exec(`
+            UPDATE Reservation 
+            SET ClaimedbyID = $1, last_claim = NOW() 
+            WHERE SeatReservationID = $2`,
+			claimseatform.BookedbyID, seatReservationID)
+
+		if err != nil {
+			// Rollback the transaction and return error
+			tx.Rollback()
+			return fmt.Errorf("update claim query failed for SeatReservationID: %s - %v", seatReservationID, err)
+		}
+
+		log.Printf("Claim saved for SeatReservationID: %s", seatReservationID)
 	}
 
-	// if claimexsists {
-	// 	_, err = db.Exec(`
-	// 		UPDATE Reservation
-	// 		SET ClaimedbyID = $1, last_claim = $2
-	// 		WHERE SeatReservationID = $3`,
-	// 		claimseatform.BookedbyID, currenttime, seatReservationID)
-	// } else {
-	// 	_, err = db.Exec(`
-	// 	INSERT INTO Reservation (SeatReservationID, ClaimedbyID, last_claim)
-	// 	VALUES ($1, $2, $3)`,
-	// 		seatReservationID, claimseatform.BookedbyID, currenttime)
-	// }
+	// Commit the transaction if all updates are successful
+	if err := tx.Commit(); err != nil {
+		// Rollback the transaction if commit fails
+		tx.Rollback()
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
 
-	// if err != nil {
-	// 	return fmt.Errorf("Update/Insert claim query failed")
-	// }
-	// log.Println("Claim saved to database")
-
+	log.Println("Claims saved to database")
 	return nil
 }

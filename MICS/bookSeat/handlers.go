@@ -8,7 +8,10 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -20,6 +23,13 @@ import (
 type ReservationRequest struct {
 	SeatReservationIDs []string `json:"seatreservation_ids"`
 	BookedbyID         int      `json:"booked_by_id"`
+}
+
+type PaymentData struct {
+	Price          int      `json:"price"`
+	Userid         int      `json:"user_id"`
+	Seats          []string `json:"seat_ids"`
+	Paymentconf_id int      `json:"paymentconf_id"`
 }
 
 // Reservation request structure, based on Reservation table DB schema
@@ -53,27 +63,74 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 
 	// SIMULATE PAYMENT SERVICE HERE
 	// DO A SELECT UPDATE HERE TO LOCK THE ROWS
-	// WAIT FOR A CALL FROM THE PAYMENT SERVICE, Using websockets probably, 30 second wait max
-	// Proceed with saving the data, in the db
 
-	//Create the Reservation Request
-	var reservation ReservationRequest
+	// Go routine that waits for incoming payment data
+	sort.Strings(reservationform.SeatIDs)
 
-	// Create the Seatreservation ID
-	for _, seatID := range reservationform.SeatIDs {
-		reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+strconv.Itoa(reservationform.ShowID)+"_ST_"+seatID)
+	paymenturl := getPaymentUrl(reservationform.SeatIDs, reservationform.BookedbyID)
+	paymentDataChan := make(chan PaymentData)
+
+	go listenForPaymentData(paymenturl, paymentDataChan)
+
+	// Wait for payment data
+	paymentData := <-paymentDataChan
+
+	log.Println("Payment data; price: ", paymentData.Price, " conf id : ", paymentData.Paymentconf_id, " seats: ", paymentData.Seats)
+
+	// //Dummy check
+	// log.Println("OG: ", reservationform.BookedbyID)
+	// log.Println("GOT: ", paymentData.Userid)
+
+	//Check from paymentData and OG
+	if reservationform.BookedbyID != paymentData.Userid {
+		http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
+		return
 	}
-	reservation.BookedbyID = reservationform.BookedbyID
+	//Sort for proper check
+	sort.Strings(paymentData.Seats)
 
-	//Send the request to the producer function
-	err = saveBooking(db, reservation, reservationform.ShowID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
+	log.Print("Payment Seats", paymentData.Seats)
+	log.Print("Reservation Seats", reservationform.SeatIDs)
+
+	if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
+		http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// //Proceed with saving the data, in the db
+
+	// //Create the Reservation Request
+	// var reservation ReservationRequest
+
+	// // Create the Seatreservation ID
+	// for _, seatID := range reservationform.SeatIDs {
+	// 	reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+strconv.Itoa(reservationform.ShowID)+"_ST_"+seatID)
+	// }
+	// reservation.BookedbyID = reservationform.BookedbyID
+
+	// //Send the request to the producer function
+	// err = saveBooking(db, reservation, reservationform.ShowID)
+	// if err != nil {
+	// 	http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
+	// 	return
+	// }
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Success: Seat %v for Show %v is booked for user %v", reservationform.SeatIDs, reservationform.ShowID, reservationform.BookedbyID)
+}
+
+func isSeatsSame(slice1, slice2 []string) bool {
+	if len(slice1) != len(slice2) {
+		return false
+	}
+
+	for i := 0; i < len(slice1); i++ {
+		if slice1[i] != slice2[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func ConnecttoDB() (db *sqlx.DB) {
@@ -86,7 +143,29 @@ func ConnecttoDB() (db *sqlx.DB) {
 	return db
 }
 
+func getPaymentUrl(seats []string, userid int) string {
+	var result strings.Builder
+
+	// Regular expression to match special characters
+	reg := regexp.MustCompile("[^a-zA-Z0-9]+")
+
+	// Iterate over each string in the slice
+	for _, str := range seats {
+		// Replace special characters with an empty string
+		processedStr := reg.ReplaceAllString(str, "")
+
+		// Append the processed string to the result
+		result.WriteString(processedStr)
+	}
+
+	// Return the final concatenated string
+	finalurl := "/paymentData" + strconv.Itoa(userid) + result.String()
+	log.Print("Payment url: ", finalurl)
+	return finalurl
+}
+
 func checkBookingDataValid(db *sqlx.DB, reservationform ReservationForm) error {
+	//Check if Seats and showid exsist
 
 	// Check if seats exist
 	for _, seatID := range reservationform.SeatIDs {
@@ -114,7 +193,6 @@ func checkBookingDataValid(db *sqlx.DB, reservationform ReservationForm) error {
 	// log.Printf("DEBUG: showcheck done for show: %v", claimseatform.ShowID)
 
 	return nil
-
 }
 
 func saveBooking(db *sqlx.DB, reservation ReservationRequest, showid int) error {
@@ -252,4 +330,64 @@ func updateSeatLeftRedis(showID int, seatsbooked int) error {
 func generateBookingConfirmationID() int {
 	rand.Seed(time.Now().UnixNano())
 	return rand.Intn(900000) + 100000 // Generates a random number between 100000 and 999999
+}
+
+func listenForPaymentData(paymenturl string, paymentDataChan chan PaymentData) {
+
+	defer fmt.Printf("DEBUG_Conc: Exited the listenForPaymentData")
+
+	server := &http.Server{Addr: ":8097"} // Create an HTTP server instance
+
+	// ServeMux to handle routes
+	mux := http.NewServeMux()
+
+	// Channel to signal when the response is sent
+	responseSent := make(chan struct{})
+
+	// Register handler for the paymenturl
+	mux.HandleFunc(paymenturl, func(w http.ResponseWriter, r *http.Request) {
+		// Check if the request method is POST
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var paymentData PaymentData
+		err := json.NewDecoder(r.Body).Decode(&paymentData)
+		if err != nil {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+
+		// Send the payment data to the channel
+		paymentDataChan <- paymentData
+
+		// Respond with a success message
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"message": "Payment data received successfully"}`)
+
+		// Signal that the response is sent
+		close(responseSent)
+	})
+
+	// Set the ServeMux as the server's handler
+	server.Handler = mux
+
+	fmt.Println("Server listening for payment data on port 8097:", paymenturl)
+
+	// Start the HTTP server in seperate go routine, else server.ListenandServe will block the main thread
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Println("Error starting server:", err)
+		}
+	}()
+
+	// Wait for the response to be sent
+	<-responseSent
+
+	// Shutdown the server gracefully
+	if err := server.Shutdown(context.Background()); err != nil {
+		fmt.Println("Error shutting down server:", err)
+	}
 }

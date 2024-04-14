@@ -1,6 +1,7 @@
 package main
 
 import (
+	authmiddleware "checkPayment/auth"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,7 @@ func (app *Config) routes() http.Handler {
 	//To check if service up or not
 	mux.Use(middleware.Heartbeat("/ping"))
 
+	mux.Use(authmiddleware.JWTMiddleware)
 	//Add route at root level
 	mux.Post("/checkPayment", app.checkPayment)
 

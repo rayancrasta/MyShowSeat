@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,69 +52,76 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Println(reservationform)
-	// //reservation variable now has the json
-	// db := ConnecttoDB()
+	//reservation variable now has the json
+	db := ConnecttoDB()
 
-	// //Check if seatID and showID exsists
-	// err = checkBookingDataValid(db, reservationform)
-	// if err != nil {
-	// 	http.Error(w, fmt.Sprintf("Booking Data Check failed: %v", err), http.StatusInternalServerError)
-	// 	return
-	// }
+	//Check if seatID and showID exsists
+	err = checkBookingDataValid(db, reservationform)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Booking Data Check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	// // SIMULATE PAYMENT SERVICE HERE
-	// // DO A SELECT UPDATE HERE TO LOCK THE ROWS
+	// SIMULATE PAYMENT SERVICE HERE
+	// DO A SELECT UPDATE HERE TO LOCK THE ROWS
 
-	// // Go routine that waits for incoming payment data
-	// sort.Strings(reservationform.SeatIDs)
+	// Begin a transaction
+	tx, err := db.Beginx()
+	err = lockRowBeforePayment(tx, db, reservationform.SeatIDs)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("DEBUG: Couldnt lock seats before payment check", err), http.StatusInternalServerError)
+		return
+	}
+	// Go routine that waits for incoming payment data
+	sort.Strings(reservationform.SeatIDs)
 
-	// paymenturl := getPaymentUrl(reservationform.SeatIDs, reservationform.BookedbyID)
-	// paymentDataChan := make(chan PaymentData)
+	paymenturl := getPaymentUrl(reservationform.SeatIDs, reservationform.BookedbyID)
+	paymentDataChan := make(chan PaymentData)
 
-	// go listenForPaymentData(paymenturl, paymentDataChan)
+	go listenForPaymentData(paymenturl, paymentDataChan)
 
-	// // Wait for payment data
-	// paymentData := <-paymentDataChan
+	// Wait for payment data
+	paymentData := <-paymentDataChan
 
-	// log.Println("Payment data; price: ", paymentData.Price, " conf id : ", paymentData.Paymentconf_id, " seats: ", paymentData.Seats)
+	log.Println("Payment data; price: ", paymentData.Price, " conf id : ", paymentData.Paymentconf_id, " seats: ", paymentData.Seats)
 
-	// // //Dummy check
-	// // log.Println("OG: ", reservationform.BookedbyID)
-	// // log.Println("GOT: ", paymentData.Userid)
+	// //Dummy check
+	// log.Println("OG: ", reservationform.BookedbyID)
+	// log.Println("GOT: ", paymentData.Userid)
 
-	// //Check from paymentData and OG
-	// if reservationform.BookedbyID != paymentData.Userid {
-	// 	http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
-	// 	return
-	// }
-	// //Sort for proper check
-	// sort.Strings(paymentData.Seats)
+	//Check from paymentData and OG
+	if reservationform.BookedbyID != paymentData.Userid {
+		http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
+		return
+	}
+	//Sort for proper check
+	sort.Strings(paymentData.Seats)
 
-	// log.Print("Payment Seats", paymentData.Seats)
-	// log.Print("Reservation Seats", reservationform.SeatIDs)
+	log.Print("Payment Seats", paymentData.Seats)
+	log.Print("Reservation Seats", reservationform.SeatIDs)
 
-	// if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
-	// 	http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
-	// 	return
-	// }
+	if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
+		http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	// //Proceed with saving the data, in the db
+	//Proceed with saving the data, in the db
 
-	// //Create the Reservation Request
-	// var reservation ReservationRequest
+	//Create the Reservation Request
+	var reservation ReservationRequest
 
-	// // Create the Seatreservation ID
-	// for _, seatID := range reservationform.SeatIDs {
-	// 	reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+strconv.Itoa(reservationform.ShowID)+"_ST_"+seatID)
-	// }
-	// reservation.BookedbyID = reservationform.BookedbyID
+	// Create the Seatreservation ID
+	for _, seatID := range reservationform.SeatIDs {
+		reservation.SeatReservationIDs = append(reservation.SeatReservationIDs, "SH_"+strconv.Itoa(reservationform.ShowID)+"_ST_"+seatID)
+	}
+	reservation.BookedbyID = reservationform.BookedbyID
 
-	// //Send the request to the producer function
-	// err = saveBooking(db, reservation, reservationform.ShowID)
-	// if err != nil {
-	// 	http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
-	// 	return
-	// }
+	//Send the request to the producer function
+	err = saveBooking(tx, db, reservation, reservationform.ShowID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Success: Seat %v for Show %v is booked for user %v", reservationform.SeatIDs, reservationform.ShowID, reservationform.BookedbyID)
@@ -141,6 +149,18 @@ func ConnecttoDB() (db *sqlx.DB) {
 	}
 
 	return db
+}
+
+func lockRowBeforePayment(tx *sqlx.Tx, db *sqlx.DB, seatIDs []string) error {
+	_, err := tx.Exec(`
+        SELECT SeatReservationID
+        FROM Reservation
+        WHERE SeatReservationID = ANY($1)
+        FOR UPDATE`, pq.Array(seatIDs))
+	if err != nil {
+		return fmt.Errorf("error locking rows: %v", err)
+	}
+	return nil
 }
 
 func getPaymentUrl(seats []string, userid int) string {
@@ -195,19 +215,13 @@ func checkBookingDataValid(db *sqlx.DB, reservationform ReservationForm) error {
 	return nil
 }
 
-func saveBooking(db *sqlx.DB, reservation ReservationRequest, showid int) error {
+func saveBooking(tx *sqlx.Tx, db *sqlx.DB, reservation ReservationRequest, showid int) error {
 	log.Println("Inside Consumer_saveToDatabase")
-
-	// Begin a transaction
-	tx, err := db.Beginx()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
-	}
 	defer tx.Rollback() // Rollback the transaction if it hasn't been committed
 
 	// Check if any of the provided SeatReservationIDs are already booked
 	var count int
-	err = tx.Get(&count, `
+	err := tx.Get(&count, `
     SELECT COUNT(*)
     FROM Reservation
     WHERE SeatReservationID = ANY($1) AND Booked = TRUE`, pq.Array(reservation.SeatReservationIDs))

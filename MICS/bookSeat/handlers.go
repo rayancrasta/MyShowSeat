@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +21,7 @@ import (
 
 type ReservationRequest struct {
 	SeatReservationIDs []string `json:"seatreservation_ids"`
-	BookedbyID         int      `json:"booked_by_id"`
+	BookedbyID         int      `json:"user_id"`
 }
 
 type PaymentData struct {
@@ -36,7 +35,7 @@ type PaymentData struct {
 type ReservationForm struct {
 	SeatIDs    []string `json:"seat_ids"`
 	ShowID     int      `json:"show_id"`
-	BookedbyID int      `json:"booked_by_id"` //user who is trying to book
+	BookedbyID int      `json:"user_id"` //user who is trying to book
 }
 
 func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
@@ -51,51 +50,52 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//reservation variable now has the json
-	db := ConnecttoDB()
+	log.Println(reservationform)
+	// //reservation variable now has the json
+	// db := ConnecttoDB()
 
-	//Check if seatID and showID exsists
-	err = checkBookingDataValid(db, reservationform)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Booking Data Check failed: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// //Check if seatID and showID exsists
+	// err = checkBookingDataValid(db, reservationform)
+	// if err != nil {
+	// 	http.Error(w, fmt.Sprintf("Booking Data Check failed: %v", err), http.StatusInternalServerError)
+	// 	return
+	// }
 
-	// SIMULATE PAYMENT SERVICE HERE
-	// DO A SELECT UPDATE HERE TO LOCK THE ROWS
+	// // SIMULATE PAYMENT SERVICE HERE
+	// // DO A SELECT UPDATE HERE TO LOCK THE ROWS
 
-	// Go routine that waits for incoming payment data
-	sort.Strings(reservationform.SeatIDs)
+	// // Go routine that waits for incoming payment data
+	// sort.Strings(reservationform.SeatIDs)
 
-	paymenturl := getPaymentUrl(reservationform.SeatIDs, reservationform.BookedbyID)
-	paymentDataChan := make(chan PaymentData)
+	// paymenturl := getPaymentUrl(reservationform.SeatIDs, reservationform.BookedbyID)
+	// paymentDataChan := make(chan PaymentData)
 
-	go listenForPaymentData(paymenturl, paymentDataChan)
+	// go listenForPaymentData(paymenturl, paymentDataChan)
 
-	// Wait for payment data
-	paymentData := <-paymentDataChan
+	// // Wait for payment data
+	// paymentData := <-paymentDataChan
 
-	log.Println("Payment data; price: ", paymentData.Price, " conf id : ", paymentData.Paymentconf_id, " seats: ", paymentData.Seats)
+	// log.Println("Payment data; price: ", paymentData.Price, " conf id : ", paymentData.Paymentconf_id, " seats: ", paymentData.Seats)
 
-	// //Dummy check
-	// log.Println("OG: ", reservationform.BookedbyID)
-	// log.Println("GOT: ", paymentData.Userid)
+	// // //Dummy check
+	// // log.Println("OG: ", reservationform.BookedbyID)
+	// // log.Println("GOT: ", paymentData.Userid)
 
-	//Check from paymentData and OG
-	if reservationform.BookedbyID != paymentData.Userid {
-		http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
-		return
-	}
-	//Sort for proper check
-	sort.Strings(paymentData.Seats)
+	// //Check from paymentData and OG
+	// if reservationform.BookedbyID != paymentData.Userid {
+	// 	http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
+	// 	return
+	// }
+	// //Sort for proper check
+	// sort.Strings(paymentData.Seats)
 
-	log.Print("Payment Seats", paymentData.Seats)
-	log.Print("Reservation Seats", reservationform.SeatIDs)
+	// log.Print("Payment Seats", paymentData.Seats)
+	// log.Print("Reservation Seats", reservationform.SeatIDs)
 
-	if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
-		http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
-		return
-	}
+	// if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
+	// 	http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
+	// 	return
+	// }
 
 	// //Proceed with saving the data, in the db
 

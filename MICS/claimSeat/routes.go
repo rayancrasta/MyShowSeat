@@ -1,6 +1,7 @@
 package main
 
 import (
+	authmiddleware "claimseat/auth"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +25,9 @@ func (app *Config) routes() http.Handler {
 
 	//To check if service up or not
 	mux.Use(middleware.Heartbeat("/ping"))
+
+	//JWT middleware
+	mux.Use(authmiddleware.JWTMiddleware)
 
 	//Add route at root level
 	mux.Post("/claimSeat", app.HandleSeatClaim)

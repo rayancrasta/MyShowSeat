@@ -14,7 +14,7 @@ import (
 type ClaimSeatForm struct {
 	SeatIDs    []string `json:"seat_ids"`
 	ShowID     int      `json:"show_id"`
-	BookedbyID int      `json:"booked_by_id"` //user who is claiming
+	BookedbyID int      `json:"user_id"` //user who is claiming
 }
 
 func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {

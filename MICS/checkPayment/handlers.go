@@ -35,7 +35,7 @@ func (app *Config) checkPayment(w http.ResponseWriter, r *http.Request) {
 	//Read the request payload
 	err := json.NewDecoder(r.Body).Decode(&paymentrequest)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse payment form: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error: Failed to parse payment form: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -52,7 +52,7 @@ func (app *Config) checkPayment(w http.ResponseWriter, r *http.Request) {
 	//Send the request to the savebooking webhook
 	jsonData, err := json.Marshal(paymentdata)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse payment data form: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Failed to parse payment data form: %v", err), http.StatusInternalServerError)
 		return
 	}
 	sort.Strings(paymentdata.Seats)
@@ -60,11 +60,17 @@ func (app *Config) checkPayment(w http.ResponseWriter, r *http.Request) {
 	resp, err := http.Post(generatePaymentUrl(paymentdata.Seats, paymentdata.Userid), "application/json", bytes.NewBuffer(jsonData))
 
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to send data to PaymentData: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Failed to send data to PaymentData: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	defer resp.Body.Close()
+
+	// Check if the response status code is not 200
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, fmt.Sprintf("DEBUG: Unexpected status code from PaymentData: %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
 
 	// Respond with a success message
 	w.Header().Set("Content-Type", "application/json")

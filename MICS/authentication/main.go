@@ -2,6 +2,7 @@ package main
 
 import (
 	initializers "authentication/initialisers"
+	"os"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,5 +19,8 @@ func main() {
 	r.POST("/signup", SignUp)
 	r.POST("/login", Login)
 
-	r.Run()
+	err := r.Run(os.Getenv("PORT"))
+	if err != nil {
+		panic("[Error] failed to start Gin server due to: " + err.Error())
+	}
 }

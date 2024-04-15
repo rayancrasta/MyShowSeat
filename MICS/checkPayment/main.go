@@ -24,6 +24,7 @@ func main() {
 		Handler: app.routes(),
 	}
 
+
 	//Start the web server
 	err := srv.ListenAndServe()
 

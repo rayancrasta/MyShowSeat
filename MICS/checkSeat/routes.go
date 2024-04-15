@@ -1,6 +1,7 @@
 package main
 
 import (
+	authmiddleware "checkSeat/auth"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +25,9 @@ func (app *Config) routes() http.Handler {
 
 	//To check if service up or not
 	mux.Use(middleware.Heartbeat("/ping"))
+
+	//JWT authentication
+	mux.Use(authmiddleware.JWTMiddleware)
 
 	//Add route at root level
 	mux.Post("/isSeatFull", app.HandleisFull)

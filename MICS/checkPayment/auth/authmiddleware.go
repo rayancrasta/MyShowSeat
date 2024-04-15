@@ -18,7 +18,7 @@ func JWTMiddleware(next http.Handler) http.Handler {
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "Authorization header is missing", http.StatusUnauthorized)
+			http.Error(w, "Error: Authorization header is missing", http.StatusUnauthorized)
 			return
 		}
 
@@ -34,28 +34,28 @@ func JWTMiddleware(next http.Handler) http.Handler {
 			return []byte("verysecretsecret"), nil
 		})
 		if err != nil {
-			http.Error(w, "Error parsing the JWT token ", http.StatusUnauthorized)
+			http.Error(w, "Error: Error parsing the JWT token ", http.StatusInternalServerError)
 			return
 		}
 
 		if claims, ok := token.Claims.(jwt.MapClaims); ok {
 			//Check the expiration
 			if float64(time.Now().Unix()) > claims["exp"].(float64) {
-				http.Error(w, "Claim time isnt correct ", http.StatusUnauthorized)
+				http.Error(w, "Error: Claim time isnt correct ", http.StatusUnauthorized)
 				return
 			}
 			//Attach to request
 			// Token is valid, add userID to request body
 			body := make(map[string]interface{})
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "Failed to decode request body", http.StatusBadRequest)
+				http.Error(w, "Error: Failed to decode request body", http.StatusInternalServerError)
 				return
 			}
 
 			// Convert the value of claims["sub"] to a float64
 			sub, ok := claims["sub"].(float64)
 			if !ok {
-				http.Error(w, "Failed to convert sub to float64", http.StatusInternalServerError)
+				http.Error(w, "Error: Failed to convert sub to float64", http.StatusInternalServerError)
 				return
 			}
 			// Convert the float64 value to an integer
@@ -65,14 +65,14 @@ func JWTMiddleware(next http.Handler) http.Handler {
 			// Encode the modified body and create a new request with it
 			newBody, err := json.Marshal(body)
 			if err != nil {
-				http.Error(w, "Failed to encode modified body", http.StatusInternalServerError)
+				http.Error(w, "Error: Failed to encode modified body", http.StatusInternalServerError)
 				return
 			}
 
 			r.Body = io.NopCloser(bytes.NewReader(newBody))
 			next.ServeHTTP(w, r)
 		} else {
-			http.Error(w, "Claim isnt correct ", http.StatusUnauthorized)
+			http.Error(w, "Error: Claim isnt correct ", http.StatusUnauthorized)
 			return
 		}
 	})

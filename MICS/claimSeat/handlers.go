@@ -25,15 +25,20 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	//Read the request payload
 	err := json.NewDecoder(r.Body).Decode(&claimseatform)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse claim form: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error: Failed to parse claim form: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	db := ConnecttoDB()
+	db, err := ConnectToDB()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error: Failed to connect to DB: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	//Validation to check if show and seat match
 	err = checkClaim(db, claimseatform)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Claim Check failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Claim Check failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -41,23 +46,13 @@ func (app *Config) HandleSeatClaim(w http.ResponseWriter, r *http.Request) {
 	err = saveClaim(db, claimseatform)
 
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to claim the seat in DB: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Failed to claim the seat in DB: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintf(w, "Success: Seats %v for Show %v is claimed for user %v", claimseatform.SeatIDs, claimseatform.ShowID, claimseatform.BookedbyID)
 
-}
-
-func ConnecttoDB() (db *sqlx.DB) {
-
-	db, err := sqlx.Open("postgres", pgConnectionString)
-	if err != nil {
-		log.Fatalf("Error connecting to postgresSQL: %v", err)
-	}
-
-	return db
 }
 
 func checkClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
@@ -82,7 +77,7 @@ func checkClaim(db *sqlx.DB, claimseatform ClaimSeatForm) error {
 		return fmt.Errorf("ShowExists Error: %v", err)
 	}
 	if !showExists {
-		return fmt.Errorf("show with ID %s does not exist", claimseatform.ShowID)
+		return fmt.Errorf("show with ID %d does not exist", claimseatform.ShowID)
 	}
 
 	// log.Printf("DEBUG: showcheck done for show: %v", claimseatform.ShowID)

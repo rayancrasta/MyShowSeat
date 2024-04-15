@@ -24,8 +24,15 @@ func main() {
 		Handler: app.routes(),
 	}
 
+	//DB connection check
+	_, err := ConnectToDB()
+	if err != nil {
+		log.Fatalf("Error: DB connection %v", err)
+		return
+	}
+
 	//Start the web server
-	err := srv.ListenAndServe()
+	err = srv.ListenAndServe()
 
 	if err != nil {
 		log.Panic(err)

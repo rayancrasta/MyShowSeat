@@ -47,37 +47,34 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 	//Read the request payload
 	err := json.NewDecoder(r.Body).Decode(&reservationform)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse reservation form: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error: Failed to parse reservation form: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	log.Println(reservationform)
 	//reservation variable now has the json
-	db := ConnecttoDB()
+	db, err := ConnectToDB()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error: Failed to connect to DB: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	//Check if seatID and showID exsists
 	err = checkBookingDataValid(db, reservationform)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Booking Data Check failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Booking Data Check failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// SIMULATE PAYMENT SERVICE HERE
-	// DO A SELECT UPDATE HERE TO LOCK THE ROWS
-
 	// Begin a transaction
 	tx, err := db.Beginx()
 	if err != nil {
 		// Handle error
-		http.Error(w, fmt.Sprintf("DEBUG: Error creating DB transaction", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Error creating DB transaction", err), http.StatusInternalServerError)
 		return
 	}
 
-	err = lockRowBeforePayment(tx, db, reservationform.SeatIDs)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("DEBUG: Couldnt lock seats before payment check", err), http.StatusInternalServerError)
-		return
-	}
 	// Go routine that waits for incoming payment data
 	sort.Strings(reservationform.SeatIDs)
 
@@ -97,7 +94,7 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 
 	//Check from paymentData and OG
 	if reservationform.BookedbyID != paymentData.Userid {
-		http.Error(w, fmt.Sprintf("DEBUG: User arent same as Payment: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: User arent same as Payment: %v", err), http.StatusInternalServerError)
 		return
 	}
 	//Sort for proper check
@@ -107,7 +104,7 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 	log.Print("Reservation Seats", reservationform.SeatIDs)
 
 	if !isSeatsSame(paymentData.Seats, reservationform.SeatIDs) {
-		http.Error(w, fmt.Sprintf("DEBUG: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Seats arent same as Payment: OG: %v %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -125,11 +122,11 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 	//Send the request to the producer function
 	err = saveBooking(tx, db, reservation, reservationform.ShowID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to book Seat: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: Failed to book Seat: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintf(w, "Success: Seat %v for Show %v is booked for user %v", reservationform.SeatIDs, reservationform.ShowID, reservationform.BookedbyID)
 }
 
@@ -145,36 +142,6 @@ func isSeatsSame(slice1, slice2 []string) bool {
 	}
 
 	return true
-}
-
-func ConnecttoDB() (db *sqlx.DB) {
-
-	db, err := sqlx.Open("postgres", pgConnectionString)
-	if err != nil {
-		log.Fatalf("Error connecting to postgresSQL: %v", err)
-	}
-
-	return db
-}
-
-func lockRowBeforePayment(tx *sqlx.Tx, db *sqlx.DB, seatIDs []string) error {
-	// Acquire advisory lock
-	_, err := tx.Exec("SELECT pg_advisory_lock($1)", 123456) // Replace 123456 with a unique lock ID
-	if err != nil {
-		return fmt.Errorf("error acquiring advisory lock: %v", err)
-	}
-
-	// Lock rows for update
-	_, err = tx.Exec(`
-        SELECT SeatReservationID
-        FROM Reservation
-        WHERE SeatReservationID = ANY($1)
-        FOR UPDATE`, pq.Array(seatIDs))
-	if err != nil {
-		return fmt.Errorf("error locking rows: %v", err)
-	}
-
-	return nil
 }
 
 func getPaymentUrl(seats []string, userid int) string {
@@ -246,24 +213,13 @@ func saveBooking(tx *sqlx.Tx, db *sqlx.DB, reservation ReservationRequest, showi
 
 	if count > 0 {
 		return fmt.Errorf("the exact seat range isn't available")
-	} else {
-		// At least one of the seats is already booked, so we need to lock the rows
-		_, err := tx.Exec(`
-        SELECT SeatReservationID
-        FROM Reservation
-        WHERE SeatReservationID = ANY($1)
-        FOR UPDATE`, pq.Array(reservation.SeatReservationIDs))
-		if err != nil {
-			return fmt.Errorf("error locking rows: %v", err)
-		}
 	}
 
 	// Check if all claimedbyID match the bookedbyID
 	rows, err := tx.Queryx(`
         SELECT ClaimedbyID
         FROM Reservation
-        WHERE SeatReservationID = ANY($1)
-        FOR UPDATE`, pq.Array(reservation.SeatReservationIDs))
+        WHERE SeatReservationID = ANY($1)`, pq.Array(reservation.SeatReservationIDs))
 
 	if err != nil {
 		if err == sql.ErrNoRows {

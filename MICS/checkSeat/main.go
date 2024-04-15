@@ -11,8 +11,6 @@ const webPort = "8093"
 type Config struct {
 }
 
-const pgConnectionString = "host=localhost port=5432 user=rayanc dbname=tickets sslmode=disable"
-
 func main() {
 	app := Config{}
 

@@ -26,7 +26,9 @@ func (app *Config) routes() http.Handler {
 	//To check if service up or not
 	mux.Use(middleware.Heartbeat("/ping"))
 
+	//JWT middleware
 	mux.Use(authmiddleware.JWTMiddleware)
+
 	//Add route at root level
 	mux.Post("/checkPayment", app.checkPayment)
 

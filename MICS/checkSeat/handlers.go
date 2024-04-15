@@ -22,7 +22,7 @@ func (app *Config) HandleisFull(w http.ResponseWriter, r *http.Request) {
 	//Read the request payload
 	err := json.NewDecoder(r.Body).Decode(&seatquery)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse reservation form: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error: Failed to parse reservation form: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -34,7 +34,7 @@ func (app *Config) HandleisFull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != redis.Nil && err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get count from Redis: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Error: Failed to get count from Redis: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -59,7 +59,7 @@ func writeJSONOutput(w http.ResponseWriter, status string) {
 	// Convert the JSON object to a JSON string
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {
-		http.Error(w, "Failed to convert status to json", http.StatusInternalServerError)
+		http.Error(w, "Error: Failed to convert status to json", http.StatusInternalServerError)
 		return
 	}
 	// Set the Content-Type header to indicate JSON response

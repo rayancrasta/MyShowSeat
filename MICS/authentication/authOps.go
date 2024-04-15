@@ -33,8 +33,8 @@ func SignUp(c *gin.Context) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), 10)
 
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Failed to read body",
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to hash password",
 		})
 		return
 	}
@@ -44,7 +44,7 @@ func SignUp(c *gin.Context) {
 
 	result := initializers.DB.Create(&user)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to create User",
 		})
 		return
@@ -76,7 +76,7 @@ func Login(c *gin.Context) {
 	initializers.DB.First(&user, "username = ?", body.Username)
 
 	if user.Userid == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "Invalid Userid or password",
 		})
 		return
@@ -85,7 +85,7 @@ func Login(c *gin.Context) {
 	//Compare the password after hashing with password in db
 	err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "Invalid Userid or password",
 		})
 		return
@@ -102,13 +102,13 @@ func Login(c *gin.Context) {
 	// Sign and get the complete encoded token as a string using the secret
 	tokenString, err := token.SignedString([]byte(os.Getenv("SECRET")))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to create token",
 		})
 		return
 	}
 
-	c.JSON(http.StatusBadRequest, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"token": tokenString,
 	})
 }

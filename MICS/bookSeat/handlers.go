@@ -67,6 +67,12 @@ func (app *Config) HandleBookSeat(w http.ResponseWriter, r *http.Request) {
 
 	// Begin a transaction
 	tx, err := db.Beginx()
+	if err != nil {
+		// Handle error
+		http.Error(w, fmt.Sprintf("DEBUG: Error creating DB transaction", err), http.StatusInternalServerError)
+		return
+	}
+
 	err = lockRowBeforePayment(tx, db, reservationform.SeatIDs)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("DEBUG: Couldnt lock seats before payment check", err), http.StatusInternalServerError)
@@ -152,7 +158,14 @@ func ConnecttoDB() (db *sqlx.DB) {
 }
 
 func lockRowBeforePayment(tx *sqlx.Tx, db *sqlx.DB, seatIDs []string) error {
-	_, err := tx.Exec(`
+	// Acquire advisory lock
+	_, err := tx.Exec("SELECT pg_advisory_lock($1)", 123456) // Replace 123456 with a unique lock ID
+	if err != nil {
+		return fmt.Errorf("error acquiring advisory lock: %v", err)
+	}
+
+	// Lock rows for update
+	_, err = tx.Exec(`
         SELECT SeatReservationID
         FROM Reservation
         WHERE SeatReservationID = ANY($1)
@@ -160,6 +173,7 @@ func lockRowBeforePayment(tx *sqlx.Tx, db *sqlx.DB, seatIDs []string) error {
 	if err != nil {
 		return fmt.Errorf("error locking rows: %v", err)
 	}
+
 	return nil
 }
 

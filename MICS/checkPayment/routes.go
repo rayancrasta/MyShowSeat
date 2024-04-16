@@ -31,6 +31,7 @@ func (app *Config) routes() http.Handler {
 
 	//Add route at root level
 	mux.Post("/checkPayment", app.checkPayment)
+	mux.Post("/AbouttoCheckout",app.AbouttoCheckout)
 
 	return mux
 }

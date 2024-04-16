@@ -29,6 +29,12 @@ type paymentData struct {
 	Paymentconf_id int      `json:"paymentconf_id"`
 }
 
+type beforePayment struct {
+	Userid  int      `json:"user_id"`
+	SeatIDs []string `json:"seat_ids"`
+	Showid  int      `json:"show_id"`
+}
+
 func (app *Config) checkPayment(w http.ResponseWriter, r *http.Request) {
 	var paymentrequest PaymentRequest
 
@@ -102,4 +108,68 @@ func generatePaymentUrl(seats []string, userid int) string {
 func generatePaymentConfirmationID() int {
 	rand.Seed(time.Now().UnixNano())
 	return rand.Intn(900000) + 100000 // Generates a random number between 100000 and 999999
+}
+
+func (app *Config) AbouttoCheckout(w http.ResponseWriter, r *http.Request) {
+
+	db, err := ConnectToDB()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error: Failed to connect to DB: %v", err), http.StatusBadRequest)
+		return
+	}
+	var beforePayment beforePayment
+
+	//Read the request payload
+	err = json.NewDecoder(r.Body).Decode(&beforePayment)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error: Failed to parse before payment form: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	//Improvements
+	// Check Seat isnt booked
+	// Check Seat is booked by Same user id
+	log.Println("Userloe", beforePayment.Userid)
+	var SeatReservationIDs []string
+
+	// Create the Seatreservation ID
+	for _, seatID := range beforePayment.SeatIDs {
+		SeatReservationIDs = append(SeatReservationIDs, "SH_"+strconv.Itoa(beforePayment.Showid)+"_ST_"+seatID)
+	}
+
+	// Begin transaction
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Println("Error beginning transaction:", err)
+		return
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+			fmt.Println("Transaction rolled back due to error:", err)
+		} else {
+			err = tx.Commit()
+			if err != nil {
+				fmt.Println("Error committing transaction:", err)
+			}
+		}
+	}()
+
+	log.Print(SeatReservationIDs)
+	for _, seatReservationID := range SeatReservationIDs {
+		// Update the database with the new claim time
+		updateQuery := `UPDATE reservation SET last_claim = NOW() + interval '2 minutes' WHERE seatreservationid = $1 AND claimedbyid = $2 AND booked=false`
+
+		_, err = tx.Exec(updateQuery, seatReservationID, beforePayment.Userid)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error updating database: %v", err), http.StatusBadRequest)
+			return
+		}
+
+	}
+
+	// Respond with a success message
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"message": "2 mins added to claim"}`)
 }

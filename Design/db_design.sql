@@ -15,7 +15,8 @@ CREATE TABLE Venue (
 -- Hall Table
 CREATE TABLE Hall (
     HallID SERIAL PRIMARY KEY,
-    VenueID INTEGER REFERENCES Venue(VenueID)
+    VenueID INTEGER REFERENCES Venue(VenueID),
+    Capacity INTEGER,
 );
 
 -- Seat Table
@@ -33,9 +34,10 @@ CREATE TABLE Show (
     ShowName VARCHAR(255),
     VenueID INTEGER REFERENCES Venue(VenueID),
     HallID INTEGER REFERENCES Hall(HallID),
-	Capacity INTEGER,
     Time_start TIMESTAMP,
-    Time_end TIMESTAMP
+    Time_end TIMESTAMP,
+    totalcapacity INTEGER,
+    currentusage INTEGER
 );
 
 -- Reservation Table
